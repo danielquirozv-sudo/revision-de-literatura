@@ -21,7 +21,7 @@ from pathlib import Path
 from xml.etree import ElementTree
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from comun import SKILL, carpeta  # noqa: E402
+from comun import SKILL, carpeta, respaldar  # noqa: E402
 
 PUNTOS = [
     "1. Tipo de revisión",
@@ -81,6 +81,24 @@ def vacio(lineas):
     return len(contenido.strip()) < 3
 
 
+def criterios(proyecto):
+    """Criterios de inclusión (punto 3) y de exclusión (punto 4) tal como los
+    escribió la persona, sin el número de la lista. Listas vacías si no hay."""
+    p = carpeta(proyecto, "protocolo", crear=False) / "protocolo.md"
+    if not p.exists():
+        return [], []
+    sec = secciones(p.read_text(encoding="utf-8"))
+
+    def lista(punto):
+        out = []
+        for linea in sec.get(punto, []):
+            m = re.match(r"^(?:\d+[.)]|[-*])\s*(.+)$", linea)
+            if m and m.group(1).strip():
+                out.append(m.group(1).strip())
+        return out
+    return lista(3), lista(4)
+
+
 def confirmacion(texto):
     """Fecha escrita en «Confirmado por la persona el:», o cadena vacía."""
     for linea in texto.splitlines():
@@ -122,11 +140,15 @@ def revisar(proyecto, callado=False):
 
 
 def leer_hoja(ruta, proyecto):
-    """Saca el texto de la hoja del taller en el orden en que aparece."""
+    """Saca el texto de la hoja del taller en el orden en que aparece y lo deja
+    en 00_protocolo/hoja_extraida.txt. Si ese archivo ya existe, antes deja un
+    respaldo en 00_protocolo/respaldos/."""
     ruta = Path(ruta)
     destino = carpeta(proyecto, "protocolo") / "hoja_extraida.txt"
     if ruta.suffix.lower() in (".md", ".txt"):
-        destino.write_text(ruta.read_text(encoding="utf-8"), encoding="utf-8")
+        texto = ruta.read_text(encoding="utf-8")
+        respaldar(destino)
+        destino.write_text(texto, encoding="utf-8")
         print("Texto de la hoja copiado en {}.".format(destino))
         return
     ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
@@ -145,6 +167,7 @@ def leer_hoja(ruta, proyecto):
                     "{%s}t" % ns["w"])).strip() for celda in fila.iter("{%s}tc" % ns["w"])]
                 if any(celdas):
                     lineas.append(" | ".join(celdas))
+    respaldar(destino)
     destino.write_text("\n".join(lineas) + "\n", encoding="utf-8")
     print("Texto de la hoja en {}. El agente lo pasa a protocolo.md punto por "
           "punto y la persona lo confirma.".format(destino))

@@ -2,9 +2,9 @@
 """Prepara el cribado por título y resumen y arma la matriz.
 
 El agente propone; una persona firma. Este programa no decide nada: reparte los
-candidatos en lotes, junta las propuestas del agente y arma la matriz con las
-columnas de las personas vacías. Si la matriz ya existe, conserva lo que las
-personas hayan escrito en ella.
+candidatos en lotes, junta las propuestas del agente, las compara con el
+protocolo y con los registros, y arma la matriz con las columnas de las personas
+vacías. Si la matriz ya existe, conserva lo que las personas hayan escrito en ella.
 
 Uso (<skill> es la carpeta de esta skill y <proyecto> la de la revisión):
   python3 <skill>/scripts/cribado.py preparar --carpeta <proyecto> --tamano 40
@@ -13,11 +13,20 @@ Uso (<skill> es la carpeta de esta skill y <proyecto> la de la revisión):
   python3 <skill>/scripts/cribado.py adoptar --carpeta <proyecto> --lote 1 --persona "Nombre Apellido"
 
 Cada propuesta del agente es un archivo 04_cribado/propuestas/lote_NNN.csv con
-las columnas id_ref; propuesta (incluir, excluir o dudoso); motivo, copiado tal
-cual del protocolo (para excluir, el primer criterio de exclusión que se
-cumple; para incluir, «cumple todos los criterios de inclusión»; para dudoso, el
-criterio que no se puede verificar con título y resumen); y fragmento, las
-palabras literales del título o del resumen que sostienen la propuesta.
+las columnas id_ref; propuesta (incluir, excluir o dudoso); motivo, copiado de
+los puntos 3 y 4 del protocolo sin el número de la lista (para excluir, el
+primer criterio de exclusión que el título o el resumen muestran; para incluir,
+«cumple todos los criterios de inclusión»; para dudoso, el primer criterio de
+inclusión que no se puede dar por cumplido); y fragmento, las palabras del título
+o del resumen que sostienen la propuesta, con « … » entre dos trozos.
+
+consolidar compara cada motivo con los criterios del protocolo, sin contar el
+número de la lista, el punto final, las mayúsculas ni los espacios, y lo deja en
+la matriz con el texto exacto del protocolo, para que los motivos iguales se
+cuenten juntos. Comprueba también que cada trozo del fragmento esté tal cual en
+el título o en el resumen, sin contar las comillas ni los guiones tipográficos.
+Una propuesta que no pasa alguna de las dos pruebas no entra a la matriz, y el
+programa dice por qué.
 
 adoptar copia las propuestas de un lote a las columnas de una persona solo
 cuando ella lo pide de manera explícita, con su nombre y la fecha.
@@ -30,7 +39,9 @@ from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from comun import carpeta, escribir_csv, hoy, leer_csv, respaldar  # noqa: E402
+import protocolo  # noqa: E402
+from comun import (carpeta, clave_motivo, escribir_csv, hoy, leer_csv,  # noqa: E402
+                   para_comparar, respaldar)
 
 CAMPOS_LOTE = ["id_ref", "titulo", "resumen", "anio", "fuente", "tipo", "idioma"]
 COLUMNAS_PERSONAS = ["revisor_1", "decision_1", "motivo_1", "revisor_2",
@@ -40,6 +51,11 @@ CAMPOS_MATRIZ = (["id_ref", "autores", "anio", "titulo", "fuente", "doi", "url",
                   "propuesta_agente", "motivo_agente", "fragmento"] + COLUMNAS_PERSONAS)
 VALIDAS = {"incluir", "excluir", "dudoso"}
 PATRON_LOTE = re.compile(r"^lote_\d{3}\.csv$")
+MOTIVO_INCLUIR = "cumple todos los criterios de inclusión"
+ESPERADO = {"incluir": "«{}»".format(MOTIVO_INCLUIR),
+            "excluir": "un criterio de exclusión del protocolo",
+            "dudoso": "un criterio de inclusión del protocolo"}
+ENTRE_TROZOS = re.compile(r"\s*(?:\[\s*(?:…|\.\.\.)\s*\]|…|\.\.\.)\s*")
 
 
 def candidatos(proyecto):
@@ -103,13 +119,54 @@ def leer_propuestas(base):
     return propuestas, errores
 
 
+def motivos_validos(proyecto):
+    """{propuesta: {clave del motivo: texto del protocolo}}; vacío si el protocolo
+    no tiene criterios numerados."""
+    inclusion, exclusion = protocolo.criterios(proyecto)
+    if not inclusion or not exclusion:
+        return {}
+    return {"incluir": {clave_motivo(MOTIVO_INCLUIR): MOTIVO_INCLUIR},
+            "excluir": {clave_motivo(c): c for c in exclusion},
+            "dudoso": {clave_motivo(c): c for c in inclusion}}
+
+
+def fragmento_literal(fragmento, registro):
+    """Cada trozo del fragmento está tal cual en el título o en el resumen."""
+    textos = [para_comparar(registro.get(k)) for k in ("titulo", "resumen")]
+    trozos = [para_comparar(t).strip(" \"'.") for t in ENTRE_TROZOS.split(fragmento)]
+    trozos = [t for t in trozos if t]
+    return bool(trozos) and all(any(t in x for x in textos) for t in trozos)
+
+
+def revisar_propuesta(prop, registro, validos):
+    """Dice qué está mal en una propuesta, o devuelve una cadena vacía. Si el motivo
+    coincide con un criterio, lo deja con el texto exacto del protocolo."""
+    if registro is None:
+        return "no es un candidato"
+    if validos:
+        texto = validos[prop["propuesta_agente"]].get(clave_motivo(prop["motivo_agente"]))
+        if texto is None:
+            return "tiene un motivo que no es {}: «{}»".format(
+                ESPERADO[prop["propuesta_agente"]], prop["motivo_agente"])
+        prop["motivo_agente"] = texto
+    if not fragmento_literal(prop["fragmento"], registro):
+        return ("tiene un fragmento que no está tal cual en el título ni en el resumen: "
+                "«{}»".format(prop["fragmento"]))
+    return ""
+
+
 def consolidar(proyecto):
     filas = candidatos(proyecto)
+    por_id = {f["id_ref"]: f for f in filas}
     base = carpeta(proyecto, "cribado")
     propuestas, errores = leer_propuestas(base)
-    ids = {f["id_ref"] for f in filas}
-    errores += ["{} no es un candidato".format(i) for i in propuestas if i not in ids]
-    sin_propuesta = [i for i in ids if i not in propuestas]
+    validos = motivos_validos(proyecto)
+    for id_ref in list(propuestas):
+        problema = revisar_propuesta(propuestas[id_ref], por_id.get(id_ref), validos)
+        if problema:
+            errores.append("{}: {} {}".format(propuestas[id_ref]["_lote"], id_ref, problema))
+            del propuestas[id_ref]
+    sin_propuesta = [i for i in por_id if i not in propuestas]
 
     ruta = base / "matriz_cribado.csv"
     previas = {}
@@ -128,20 +185,34 @@ def consolidar(proyecto):
     escribir_csv(ruta, matriz, CAMPOS_MATRIZ)
 
     cuenta = Counter(p["propuesta_agente"] for p in propuestas.values())
-    motivos = Counter(p["motivo_agente"] for p in propuestas.values()
-                      if p["propuesta_agente"] == "excluir")
     firmadas = Counter((m["decision_final"] or "").strip().lower() for m in matriz
                        if (m["decision_final"] or "").strip())
     print("Propuestas del agente: {}".format(dict(cuenta)))
-    print("Motivos de exclusión propuestos:")
-    for motivo, n in motivos.most_common():
-        print("  {:5d}  {}".format(n, motivo))
+    for valor, rotulo in (("excluir", "Motivos de exclusión propuestos:"),
+                          ("dudoso", "Dudosos, por el criterio que no se pudo dar por "
+                                     "cumplido:")):
+        print(rotulo)
+        for motivo, n in Counter(p["motivo_agente"] for p in propuestas.values()
+                                 if p["propuesta_agente"] == valor).most_common():
+            print("  {:5d}  {}".format(n, motivo))
     print("Candidatos sin propuesta: {}. Decisiones finales firmadas: {}.".format(
         len(sin_propuesta), dict(firmadas)))
+    if not validos:
+        print("ATENCIÓN: los puntos 3 y 4 de 00_protocolo/protocolo.md no tienen criterios "
+              "numerados, así que los motivos no se compararon con el protocolo.")
     if errores:
-        print("ATENCIÓN, las propuestas tienen errores que se corrigen antes de seguir:")
+        print("ATENCIÓN, las propuestas tienen errores que se corrigen en el archivo del "
+              "lote antes de seguir. Las que tienen un error no entraron a la matriz:")
         for e in errores[:50]:
             print("  - " + e)
+        if len(errores) > 50:
+            print("  y {} más.".format(len(errores) - 50))
+        if validos:
+            print("Motivos válidos, tal como van en la columna motivo:")
+            for valor in ("incluir", "excluir", "dudoso"):
+                for texto in validos[valor].values():
+                    print("  {}: {}".format(valor, texto))
+        sys.exit(1)
 
 
 def adoptar(proyecto, lote, persona):
@@ -158,12 +229,15 @@ def adoptar(proyecto, lote, persona):
         sys.exit("Primero se arma la matriz con cribado.py consolidar.")
     respaldar(ruta)
     matriz = leer_csv(ruta)
-    n = ya = 0
+    n = ya = sin = 0
     for m in matriz:
         if m["id_ref"] not in ids:
             continue
         if (m.get("decision_final") or "").strip():
             ya += 1
+            continue
+        if not (m.get("propuesta_agente") or "").strip():
+            sin += 1
             continue
         m["revisor_1"] = persona
         m["decision_1"] = m.get("propuesta_agente", "")
@@ -177,6 +251,9 @@ def adoptar(proyecto, lote, persona):
     escribir_csv(ruta, matriz, CAMPOS_MATRIZ)
     print("{} decisiones del {} adoptadas por {} el {}. {} ya tenían decisión y no se "
           "tocaron.".format(n, nombre, persona, hoy(), ya))
+    if sin:
+        print("{} no tienen una propuesta válida en la matriz y quedan sin firmar: se "
+              "corrigen en el archivo del lote y se vuelve a correr consolidar.".format(sin))
 
 
 def main():

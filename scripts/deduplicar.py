@@ -13,12 +13,19 @@ sin DOI solo se pueden unir por título y año (pasadas 2 y 3). El candidato que
 queda toma los datos que falten (DOI, publicación, resumen) de los registros que
 se fusionaron con él.
 
+Dos candidatos con DOI distinto pueden ser versiones del mismo estudio (un
+preprint y su versión publicada, una ponencia y el artículo). Si tienen al menos
+un apellido en común, año con diferencia de uno a lo sumo y títulos parecidos
+desde el umbral de DOI distinto, van a pares_doi_distinto.csv con sus R-NNNN. No
+se fusionan: la persona anota en la columna mismo_estudio si son el mismo
+estudio, y el programa conserva esas respuestas cuando se vuelve a correr.
+
 Los identificadores R-NNNN se fijan aquí. Una vez empieza el cribado no se
 recalculan: el programa se niega a correr si ya hay lotes de cribado.
 
 Salidas en 03_deduplicacion/: candidatos.csv, duplicados_eliminados.csv (con la
-pasada que fusionó cada registro), pares_dudosos.csv y conteo.json. Antes de
-reescribirlas deja respaldos en 03_deduplicacion/respaldos/.
+pasada que fusionó cada registro), pares_dudosos.csv, pares_doi_distinto.csv y
+conteo.json. Antes de reescribirlas deja respaldos en 03_deduplicacion/respaldos/.
 
 Uso (<skill> es la carpeta de esta skill y <proyecto> la de la revisión):
   python3 <skill>/scripts/deduplicar.py --carpeta <proyecto>
@@ -30,6 +37,7 @@ import json
 import sys
 from collections import Counter
 from difflib import SequenceMatcher
+from itertools import combinations
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -43,11 +51,25 @@ COMPLETABLES = ["doi", "fuente", "resumen", "autores", "anio", "url", "idioma", 
 CAMPOS_DUDOSOS = ["similitud", "fusionar", "id_a", "titulo_a", "autores_a", "anio_a",
                   "fuente_a", "doi_a", "id_b", "titulo_b", "autores_b", "anio_b",
                   "fuente_b", "doi_b"]
+CAMPOS_DOI_DISTINTO = ["similitud", "mismo_estudio", "id_ref_a", "titulo_a", "autores_a",
+                       "anio_a", "fuente_a", "doi_a", "id_ref_b", "titulo_b", "autores_b",
+                       "anio_b", "fuente_b", "doi_b"]
 
 
 def _riqueza(r):
     return (1 if r.get("doi") else 0, len(r.get("resumen") or ""),
             len(r.get("autores") or ""))
+
+
+def apellidos_de(autores):
+    # el último apellido de cada autor, venga como «Nombre Apellido» o como
+    # «Apellido, Nombre»; una inicial suelta no cuenta
+    salida = set()
+    for autor in (autores or "").split(";"):
+        partes = normalizar_texto(autor.split(",")[0]).split()
+        if partes and len(partes[-1]) > 1:
+            salida.add(partes[-1])
+    return salida
 
 
 class Grupo:
@@ -65,6 +87,9 @@ class Grupo:
 
     def dois(self):
         return {m.get("doi") for m in self.miembros if m.get("doi")}
+
+    def apellidos(self):
+        return set().union(*(apellidos_de(m.get("autores")) for m in self.miembros))
 
     def fila(self, id_ref):
         p = {k: self.principal.get(k, "") for k in CAMPOS_CAND}
@@ -169,12 +194,60 @@ def aplicar_dudosos(finales, ruta):
     return finales
 
 
+def pares_doi_distinto(finales, filas, umbral):
+    por_apellido = {}
+    for i, g in enumerate(finales):
+        if g.dois():
+            for apellido in g.apellidos():
+                por_apellido.setdefault(apellido, []).append(i)
+    posibles = set()
+    for indices in por_apellido.values():
+        posibles.update(combinations(indices, 2))
+    pares = []
+    for i, j in sorted(posibles):
+        g1, g2 = finales[i], finales[j]
+        t1, t2 = g1.principal["_t"], g2.principal["_t"]
+        a1, a2 = g1.principal["_a"], g2.principal["_a"]
+        if not t1 or not t2 or not incompatibles(g1, g2):
+            continue
+        if a1 is not None and a2 is not None and abs(a1 - a2) > 1:
+            continue
+        ratio = SequenceMatcher(None, t1, t2).ratio()
+        if ratio < umbral:
+            continue
+        par = {"similitud": round(ratio, 3), "mismo_estudio": ""}
+        for lado, f in (("a", filas[i]), ("b", filas[j])):
+            for campo in ("id_ref", "titulo", "autores", "anio", "fuente", "doi"):
+                par["{}_{}".format(campo, lado)] = f.get(campo, "")
+        pares.append(par)
+    return pares
+
+
+def _clave_doi(par):
+    return frozenset((par.get(c) or "").strip().lower() for c in ("doi_a", "doi_b"))
+
+
+def conservar_respuestas(pares, ruta):
+    # las respuestas se reconocen por el par de DOI, que no cambia entre corridas
+    # como cambian los R-NNNN; devuelve cuántas son de pares que ya no se listan
+    if not ruta.exists():
+        return 0
+    previas = {_clave_doi(p): p["mismo_estudio"].strip() for p in leer_csv(ruta)
+               if (p.get("mismo_estudio") or "").strip()}
+    for p in pares:
+        p["mismo_estudio"] = previas.pop(_clave_doi(p), "")
+    return len(previas)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--carpeta", default=".", help="carpeta del proyecto")
     ap.add_argument("--umbral-auto", type=float, default=0.97)
     ap.add_argument("--umbral-duda", type=float, default=0.93)
+    ap.add_argument("--umbral-doi-distinto", type=float, default=0.70,
+                    help="similitud de los títulos desde la cual dos candidatos con DOI "
+                         "distinto y algún apellido en común van a pares_doi_distinto.csv")
     ap.add_argument("--aplicar-dudosos", default=None,
                     help="pares_dudosos.csv con la columna fusionar llena (Sí o No)")
     a = ap.parse_args()
@@ -204,12 +277,18 @@ def main():
                    "base": m.get("base", ""), "pasada": m.get("_pasada", ""),
                    "quedo_en": g.principal["id_registro"]}
                   for g in finales for m in g.miembros if m is not g.principal]
+    doi_distinto = salida / "pares_doi_distinto.csv"
+    versiones = pares_doi_distinto(finales, filas, a.umbral_doi_distinto)
+    perdidas = conservar_respuestas(versiones, doi_distinto)
+    sin_decidir = sum(1 for v in versiones if not v["mismo_estudio"])
 
-    for nombre in ("candidatos.csv", "duplicados_eliminados.csv", "conteo.json"):
+    for nombre in ("candidatos.csv", "duplicados_eliminados.csv", "pares_doi_distinto.csv",
+                   "conteo.json"):
         respaldar(salida / nombre)
     escribir_csv(salida / "candidatos.csv", filas, CAMPOS_CAND)
     escribir_csv(salida / "duplicados_eliminados.csv", eliminados,
                  ["id_eliminado", "titulo", "base", "pasada", "quedo_en"])
+    escribir_csv(doi_distinto, versiones, CAMPOS_DOI_DISTINTO)
     if not a.aplicar_dudosos:
         respaldar(dudosos_previos)
         escribir_csv(dudosos_previos, dudosos, CAMPOS_DUDOSOS)
@@ -219,7 +298,9 @@ def main():
               "candidatos": len(filas),
               "candidatos_sin_doi": sum(1 for f in filas if not f.get("doi")),
               "pares_dudosos_sin_decidir": len(dudosos),
+              "pares_doi_distinto_sin_decidir": sin_decidir,
               "umbral_auto": a.umbral_auto, "umbral_duda": a.umbral_duda,
+              "umbral_doi_distinto": a.umbral_doi_distinto,
               "dudosos_aplicados_desde": a.aplicar_dudosos or ""}
     with open(salida / "conteo.json", "w", encoding="utf-8") as f:
         json.dump(conteo, f, ensure_ascii=False, indent=2)
@@ -227,6 +308,14 @@ def main():
     if dudosos:
         print("ATENCIÓN: {} pares dudosos esperan la decisión de una persona "
               "(columna fusionar de pares_dudosos.csv).".format(len(dudosos)))
+    if sin_decidir:
+        print("ATENCIÓN: {} pares de candidatos con DOI distinto pueden ser el mismo "
+              "estudio y esperan la decisión de una persona (columna mismo_estudio de "
+              "pares_doi_distinto.csv). No se fusionan.".format(sin_decidir))
+    if perdidas:
+        print("ATENCIÓN: {} respuestas de mismo_estudio son de pares que ya no se listan; "
+              "quedan en la copia de pares_doi_distinto.csv en 03_deduplicacion/respaldos/."
+              .format(perdidas))
 
 
 if __name__ == "__main__":
