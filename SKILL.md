@@ -38,7 +38,7 @@ Además, a la carpeta no entra ningún dato que identifique a una persona (parti
 | 1. Protocolo | la persona | `protocolo.py` | `00_protocolo/protocolo.md` |
 | 2. Búsqueda | la persona aprueba las cadenas | `cadenas.py`, `buscar.py` | `00_protocolo/cadenas.json`, `01_busqueda/crudos/`, `01_busqueda/registro_corridas.csv` |
 | 3. Normalización | nadie: es mecánica | `normalizar.py` | `02_normalizacion/registros.csv` |
-| 4. Deduplicación | la persona, en los pares dudosos | `deduplicar.py` | `03_deduplicacion/candidatos.csv` y `pares_dudosos.csv` |
+| 4. Deduplicación | la persona, en los pares dudosos y en los de DOI distinto | `deduplicar.py` | `03_deduplicacion/candidatos.csv`, `pares_dudosos.csv` y `pares_doi_distinto.csv` |
 | 5. Cribado | la persona firma; el agente propone | `cribado.py` | `04_cribado/propuestas/`, `04_cribado/reglas_aplicadas.md`, `04_cribado/matriz_cribado.csv` |
 | 6. Extracción | la persona, a texto completo | `extraccion.py` | `05_extraccion/texto_completo.csv`, `05_extraccion/fichas/` |
 | 7. Verificación de citas | la persona resuelve lo que no se verifica | `verificar_citas.py` | `06_verificacion/citas_verificadas.csv` |
@@ -71,7 +71,7 @@ Nada se busca en esta etapa ni antes de cerrarla.
 
 ### Etapa 4. Deduplicación
 
-`deduplicar.py` quita duplicados en tres pasadas: DOI idéntico; título y año; títulos muy parecidos. Dos registros con DOI distinto no se fusionan nunca. Los pares parecidos que no superan el umbral automático van a `pares_dudosos.csv`, con títulos, autores, años y publicaciones: el agente se los muestra a la persona, ella escribe Sí o No en la columna `fusionar` y después se corre `deduplicar.py --aplicar-dudosos <proyecto>/03_deduplicacion/pares_dudosos.csv`. Los umbrales (0,97 y 0,93 por omisión) quedan en `03_deduplicacion/conteo.json`; si la persona los cambia, se anota en `ESTADO.md`. Los identificadores R-NNNN de los candidatos se fijan en esta etapa: cuando empieza el cribado, `deduplicar.py` ya no corre.
+`deduplicar.py` quita duplicados en tres pasadas: DOI idéntico; título y año; títulos muy parecidos. Dos registros con DOI distinto no se fusionan nunca. Los pares parecidos que no superan el umbral automático van a `pares_dudosos.csv`, con títulos, autores, años y publicaciones: el agente se los muestra a la persona, ella escribe Sí o No en la columna `fusionar` y después se corre `deduplicar.py --aplicar-dudosos <proyecto>/03_deduplicacion/pares_dudosos.csv`. Dos candidatos con DOI distinto pueden ser versiones del mismo estudio, como un preprint y su versión publicada, o una ponencia y el artículo que salió de ella. Los que tienen al menos un apellido en común, a lo sumo un año de diferencia y títulos parecidos van a `pares_doi_distinto.csv`, con sus identificadores R-NNNN: el agente se los muestra a la persona y ella escribe Sí o No en la columna `mismo_estudio`. Los dos siguen en la lista de candidatos, porque PRISMA 2020 cuenta por separado los estudios incluidos y sus informes. Si `deduplicar.py` se vuelve a correr, conserva esas respuestas. Los umbrales de similitud de los títulos (por omisión, 0,97 para la fusión automática, 0,93 para los pares dudosos y 0,70 para los pares con DOI distinto) quedan en `03_deduplicacion/conteo.json`; si la persona los cambia, se anota en `ESTADO.md`. Los identificadores R-NNNN de los candidatos se fijan en esta etapa: cuando empieza el cribado, `deduplicar.py` ya no corre.
 
 ### Etapa 5. Cribado por título y resumen
 
