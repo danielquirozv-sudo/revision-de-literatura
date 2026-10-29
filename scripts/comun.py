@@ -10,6 +10,7 @@ import csv
 import html
 import json
 import os
+import re
 import time
 import unicodedata
 import urllib.error
@@ -131,6 +132,29 @@ def normalizar_texto(texto):
     t = "".join(c for c in t if not unicodedata.combining(c))
     t = "".join(c if c.isalnum() or c.isspace() else " " for c in t.lower())
     return " ".join(t.split())
+
+
+# Comillas y guiones tipográficos que una copia puede cambiar sin cambiar las palabras.
+TIPOGRAFIA = str.maketrans({
+    "‘": "'", "’": "'", "‚": "'", "‛": "'", "′": "'",
+    "“": '"', "”": '"', "„": '"', "‟": '"', "″": '"',
+    "«": '"', "»": '"', "‐": "-", "‑": "-", "‒": "-",
+    "–": "-", "—": "-", "―": "-", "−": "-", "­": None})
+
+
+def para_comparar(texto):
+    """Minúsculas y espacios simples, con las comillas y los guiones tipográficos
+    cambiados por los del teclado. Conserva las tildes y las palabras: sirve para
+    comprobar que una cita está tal cual en otro texto."""
+    t = unicodedata.normalize("NFKC", str(texto or "")).translate(TIPOGRAFIA)
+    return " ".join(t.split()).casefold()
+
+
+def clave_motivo(texto):
+    """Clave para comparar un motivo con un criterio del protocolo: sin el número
+    de la lista ni el punto final, y con para_comparar."""
+    t = re.sub(r"^\d+\s*[.)-]?\s*", "", para_comparar(texto))
+    return t.rstrip(" .")
 
 
 def anio_entero(valor):

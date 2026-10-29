@@ -81,6 +81,24 @@ def vacio(lineas):
     return len(contenido.strip()) < 3
 
 
+def criterios(proyecto):
+    """Criterios de inclusión (punto 3) y de exclusión (punto 4) tal como los
+    escribió la persona, sin el número de la lista. Listas vacías si no hay."""
+    p = carpeta(proyecto, "protocolo", crear=False) / "protocolo.md"
+    if not p.exists():
+        return [], []
+    sec = secciones(p.read_text(encoding="utf-8"))
+
+    def lista(punto):
+        out = []
+        for linea in sec.get(punto, []):
+            m = re.match(r"^(?:\d+[.)]|[-*])\s*(.+)$", linea)
+            if m and m.group(1).strip():
+                out.append(m.group(1).strip())
+        return out
+    return lista(3), lista(4)
+
+
 def confirmacion(texto):
     """Fecha escrita en «Confirmado por la persona el:», o cadena vacía."""
     for linea in texto.splitlines():
