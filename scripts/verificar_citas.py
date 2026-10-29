@@ -211,7 +211,9 @@ def actualizar_fichas(proyecto, filas):
         texto = ruta.read_text(encoding="utf-8")
         nueva = "Verificación de la cita: {} el {} ({})".format(
             f["estado"], f["verificado_el"][:10], f.get("nota", ""))
-        texto2 = re.sub(r"^Verificación de la cita:.*$", nueva, texto, count=1, flags=re.M)
+        # Con una función, re.sub no interpreta las barras invertidas de la nota.
+        texto2 = re.sub(r"^Verificación de la cita:.*$", lambda m: nueva, texto,
+                        count=1, flags=re.M)
         if texto2 != texto:
             respaldar(ruta)
             ruta.write_text(texto2, encoding="utf-8")
