@@ -4,7 +4,8 @@
 Por omisión toma los estudios de 05_extraccion/texto_completo.csv. También
 recibe cualquier CSV con columnas doi y titulo (y, si las tiene, id_ref y anio),
 o un DOI suelto. Si un estudio tiene ficha, actualiza su línea «Verificación de
-la cita».
+la cita»; cuando la línea cambia, antes deja un respaldo de la ficha en
+05_extraccion/fichas/respaldos/.
 
 Estados posibles:
   verificada        el DOI existe en Crossref u OpenAlex y título y año coinciden
@@ -212,6 +213,7 @@ def actualizar_fichas(proyecto, filas):
             f["estado"], f["verificado_el"][:10], f.get("nota", ""))
         texto2 = re.sub(r"^Verificación de la cita:.*$", nueva, texto, count=1, flags=re.M)
         if texto2 != texto:
+            respaldar(ruta)
             ruta.write_text(texto2, encoding="utf-8")
             n += 1
     return n
