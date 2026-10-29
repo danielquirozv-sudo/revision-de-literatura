@@ -9,7 +9,14 @@ como pide PRISMA 2020 cuando se usan herramientas automáticas.
 Uso (<skill> es la carpeta de esta skill y <proyecto> la de la revisión):
   python3 <skill>/scripts/flujo.py --carpeta <proyecto>
 
-Escribe flujo_prisma.json y flujo_prisma.md en la carpeta del proyecto.
+Escribe flujo_prisma.json y flujo_prisma.md en la carpeta del proyecto. Si ya
+existen y alguna cifra cambió, antes deja un respaldo en respaldos/; si ninguna
+cambió, no los toca.
+
+Los motivos de exclusión que escribieron las personas se cuentan con el texto del
+protocolo cuando coinciden con un criterio de exclusión, sin contar el número de
+la lista, el punto final, las mayúsculas ni los espacios. Los demás se cuentan
+como están escritos, y el programa los muestra para que la persona los revise.
 """
 
 import argparse
@@ -19,11 +26,35 @@ from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from comun import ahora, carpeta, leer_csv  # noqa: E402
+import protocolo  # noqa: E402
+from comun import ahora, carpeta, clave_motivo, leer_csv, respaldar  # noqa: E402
+
+
+def agrupar_motivos(motivos, exclusion, sin_criterio):
+    """Cuenta los motivos de exclusión de las personas. Los que coinciden con un
+    criterio del protocolo van con su texto; los demás, como están, y se anotan en
+    sin_criterio."""
+    canon = {clave_motivo(c): c for c in exclusion}
+    cuenta = Counter()
+    for m in motivos:
+        m = (m or "").strip()
+        if not m:
+            cuenta["sin motivo escrito"] += 1
+            continue
+        texto = canon.get(clave_motivo(m))
+        if texto is None:
+            if canon:
+                sin_criterio.add(m)
+            texto = m
+        cuenta[texto] += 1
+    return dict(cuenta)
 
 
 def contar(proyecto):
+    """Devuelve las cifras y los motivos de las personas que no son un criterio."""
     f = {"calculado": ahora()}
+    _, exclusion = protocolo.criterios(proyecto)
+    sin_criterio = set()
     por_base, fuera = Counter(), 0
     for p in sorted(carpeta(proyecto, "crudos", crear=False).glob("*.json")):
         with open(p, encoding="utf-8") as fh:
@@ -62,9 +93,10 @@ def contar(proyecto):
         f["sin_firmar"] = finales.get("sin firmar", 0)
         f["firmados_adoptando_la_propuesta_del_agente"] = sum(
             1 for x in m if "adoptó la propuesta del agente" in (x.get("observaciones") or ""))
-        f["excluidos_por_personas_con_motivo"] = dict(Counter(
-            (x.get("motivo_final") or "sin motivo escrito").strip()
-            for x in m if (x.get("decision_final") or "").strip().lower() == "excluir"))
+        f["excluidos_por_personas_con_motivo"] = agrupar_motivos(
+            (x.get("motivo_final") for x in m
+             if (x.get("decision_final") or "").strip().lower() == "excluir"),
+            exclusion, sin_criterio)
         f["excluidos_solo_por_el_agente"] = 0
 
     tc = carpeta(proyecto, "extraccion", crear=False) / "texto_completo.csv"
@@ -77,16 +109,16 @@ def contar(proyecto):
             1 for x in t if (x.get("texto_conseguido") or "").strip().lower() in ("no", "n"))
         evaluados = [x for x in t if (x.get("decision_texto_completo") or "").strip()]
         f["informes_evaluados"] = len(evaluados)
-        f["informes_excluidos_con_motivo"] = dict(Counter(
-            (x.get("motivo_texto_completo") or "sin motivo escrito").strip()
-            for x in evaluados
-            if x["decision_texto_completo"].strip().lower() == "excluir"))
+        f["informes_excluidos_con_motivo"] = agrupar_motivos(
+            (x.get("motivo_texto_completo") for x in evaluados
+             if x["decision_texto_completo"].strip().lower() == "excluir"),
+            exclusion, sin_criterio)
         f["estudios_incluidos"] = sum(
             1 for x in evaluados if x["decision_texto_completo"].strip().lower() == "incluir")
     fichas = carpeta(proyecto, "extraccion", crear=False) / "fichas"
     if fichas.exists():
         f["fichas_escritas"] = len(list(fichas.glob("*.md")))
-    return f
+    return f, sorted(sin_criterio)
 
 
 def como_texto(f):
@@ -136,12 +168,34 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--carpeta", default=".", help="carpeta del proyecto")
     a = ap.parse_args()
-    f = contar(a.carpeta)
+    f, sin_criterio = contar(a.carpeta)
     raiz = Path(a.carpeta)
-    with open(raiz / "flujo_prisma.json", "w", encoding="utf-8") as fh:
-        json.dump(f, fh, ensure_ascii=False, indent=2)
-    (raiz / "flujo_prisma.md").write_text(como_texto(f), encoding="utf-8")
+    ruta_json, ruta_md = raiz / "flujo_prisma.json", raiz / "flujo_prisma.md"
+    try:
+        with open(ruta_json, encoding="utf-8") as fh:
+            previo = json.load(fh)
+    except (OSError, ValueError):
+        previo = None
+
+    def sin_fecha(d):
+        return {k: v for k, v in d.items() if k != "calculado"}
+
     print(como_texto(f))
+    if sin_criterio:
+        print("ATENCIÓN: estos motivos de exclusión que escribió una persona no coinciden "
+              "con ningún criterio de exclusión del protocolo y se cuentan como están:")
+        for m in sin_criterio:
+            print("  - " + m)
+    if isinstance(previo, dict) and ruta_md.exists() and sin_fecha(previo) == sin_fecha(f):
+        print("Las cifras no cambiaron desde el cálculo del {}: flujo_prisma.json y "
+              "flujo_prisma.md quedan como estaban.".format(previo.get("calculado", "")))
+        return
+    respaldos = [r for r in (respaldar(ruta_json), respaldar(ruta_md)) if r]
+    with open(ruta_json, "w", encoding="utf-8") as fh:
+        json.dump(f, fh, ensure_ascii=False, indent=2)
+    ruta_md.write_text(como_texto(f), encoding="utf-8")
+    if respaldos:
+        print("El cálculo anterior quedó en {}.".format(", ".join(str(r) for r in respaldos)))
 
 
 if __name__ == "__main__":
